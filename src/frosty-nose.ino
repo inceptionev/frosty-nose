@@ -3,11 +3,14 @@
  * Description:
  * Author: E. Chiu
  * Date: Aug 2020
+ * Remeber to check DEBUGMODE and TRANSMIT settings
  */
 
 #include <MCP342X.h>
 
 #define PIN_LED D7
+#define PIN_RELAY D8
+
 #define ADC_COUNTS_4mA 5813
 #define ADC_COUNTS_20mA 29390
 #define FLOW_CONVERSION_SLOPE 1
@@ -20,6 +23,9 @@
 #define TEMP_BURNER_CONVERSION_OFFSET 0
 #define FRACTION_CONVERSION_SLOPE 1
 #define FRACTION_CONVERSION_OFFSET 0
+
+#define DEBUGMODE 0
+#define TRANSMIT 1
 
 
 //instantiate 4-20mA loop ADC
@@ -62,6 +68,7 @@ void setup() {
 
   //set pin modes
   pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_RELAY, OUTPUT);
 
   //set up MCP3428 ADC
   loopADC.configure( MCP342X_MODE_CONTINUOUS |
@@ -73,10 +80,16 @@ void setup() {
 // loop() runs over and over again, as quickly as it can execute.
 void loop() {
   // The core of your code will likely live here.
+  int loopTime = 20;
 
   // send data only when you receive data:
- 
-  for (int k=0; k<1; k++){
+  if (DEBUGMODE > 0) {
+    loopTime = 2;
+  } else {
+    loopTime = 20;
+  }
+
+  for (int k=0; k<loopTime; k++){
     digitalWrite(PIN_LED, LOW);
     delay(1900);
     digitalWrite(PIN_LED, HIGH);
@@ -84,8 +97,15 @@ void loop() {
   }
 
   //wake up and poll sensors
-  //pseudocode: turn relay on
-  //delay(30000); //time for the sensors to stabilize
+  //turn relay on
+  digitalWrite(PIN_RELAY, HIGH);
+  //time for the sensors to stabilize, flash LED to indicate
+  for (int k=0; k<75; k++){
+    digitalWrite(PIN_LED, LOW);
+    delay(100);
+    digitalWrite(PIN_LED, HIGH);
+    delay(100);
+  }
   static int16_t adcCh1;
   static int16_t adcCh2;
   static int16_t adcCh3;
@@ -98,6 +118,14 @@ void loop() {
   loopADC.getResult(&adcCh3); 
   loopADC.startConversion(MCP342X_CHANNEL_4);
   loopADC.getResult(&adcCh4);
+
+  delay(100); //just in case
+
+  if (DEBUGMODE > 0) {
+    digitalWrite(PIN_RELAY, LOW); //don't turn off sensors in debug mode
+  } else {
+    digitalWrite(PIN_RELAY, LOW);
+  }
 
   Serial.print("Ch1 ");
   Serial.println(adcCh1);
@@ -115,8 +143,12 @@ void loop() {
   pressure = PRESSURE_CONVERSION_SLOPE*16.f*(adcCh3-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + PRESSURE_CONVERSION_OFFSET;
   temp_burner = TEMP_BURNER_CONVERSION_SLOPE*16.f*(adcCh4-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + TEMP_BURNER_CONVERSION_OFFSET;
 
+  Serial.println(String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4));
 
-  Particle.publish("scheduledReport", String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4), PRIVATE, NO_ACK);
+  if (TRANSMIT > 0) {
+    Particle.publish("scheduledReport", String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4), PRIVATE, NO_ACK);
+  }
+
   //pseudocode: turn relay off
   digitalWrite(PIN_LED, LOW);
   delay(1000);
