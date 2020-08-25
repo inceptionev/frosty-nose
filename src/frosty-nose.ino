@@ -24,9 +24,19 @@
 #define FRACTION_CONVERSION_SLOPE 1
 #define FRACTION_CONVERSION_OFFSET 0
 
-#define DEBUGMODE 0
-#define TRANSMIT 1
+#define DEBUGMODE 0   //in debug mode we skip the sleep time and don't power off the sensors
+#define TRANSMIT 1    //set to 1 to enable celluar reporting, set to 0 to disable
+                      //check this one to make sure you don't unintentionally consume data during debugging
 
+//timing parameters, in seconds
+#define SENSOR_WARMUP 15  //time required between sensor turn on and reading
+#define SLEEP_TIME 60 //time between cycles of sensor read + report 
+#define HOUSEKEEPING_CYCLE 0.5 //how often the housekeeping cycle runs during the idle state
+#define WARMUP_CYCLE 0.1 //this is basically to blink the LED rapidly during warmup
+
+//instatiate global state variables
+static int state = 0;
+static int cyclecounter = 0;
 
 //instantiate 4-20mA loop ADC
 MCP342X loopADC;
@@ -80,78 +90,102 @@ void setup() {
 // loop() runs over and over again, as quickly as it can execute.
 void loop() {
   // The core of your code will likely live here.
-  int loopTime = 20;
 
-  // send data only when you receive data:
-  if (DEBUGMODE > 0) {
-    loopTime = 2;
-  } else {
-    loopTime = 20;
-  }
+  switch(state) {
+    case 0:  //idle, check UART buffer, update CH4 Concentration reading, flash LED
+      cyclecounter++;
+      digitalWrite(PIN_LED, (cyclecounter/2)%2 > 0.5);  //toggle LED every two cycles
+      digitalWrite(PIN_RELAY, LOW);  //sensor power off in this state
+      updateMethaneSensor();
+      if (cyclecounter * HOUSEKEEPING_CYCLE > SLEEP_TIME) {
+        cyclecounter = 0;
+        state = 1;
+      }
+      if (DEBUGMODE > 0) {
+        state = 1;  //immediately skip the sleep state in debug mode
+      }
+      delay(HOUSEKEEPING_CYCLE*1000);
+      break;
+    
+    case 1:  //wake up the sensors and wait for them to warm up
+      cyclecounter++;
+      digitalWrite(PIN_LED, cyclecounter%2);  //fast LED flash to indicate warmup period
+      digitalWrite(PIN_RELAY, HIGH);  //sensor power on in this state
+      updateMethaneSensor();      
+      if (cyclecounter * WARMUP_CYCLE > SENSOR_WARMUP) {
+        cyclecounter = 0;
+        state = 2;
+      }
+      delay(WARMUP_CYCLE*1000);
+      break;
 
-  for (int k=0; k<loopTime; k++){
-    digitalWrite(PIN_LED, LOW);
-    delay(1900);
-    digitalWrite(PIN_LED, HIGH);
-    delay(100);
-  }
+    case 2:  //read all sensors and convert to engineering units
+      cyclecounter++;
+      digitalWrite(PIN_LED, HIGH);  //SOLID LED to indicate report
+      digitalWrite(PIN_RELAY, HIGH);  //sensor power on in this state
 
-  //wake up and poll sensors
-  //turn relay on
-  digitalWrite(PIN_RELAY, HIGH);
-  //time for the sensors to stabilize, flash LED to indicate
-  for (int k=0; k<75; k++){
-    digitalWrite(PIN_LED, LOW);
-    delay(100);
-    digitalWrite(PIN_LED, HIGH);
-    delay(100);
-  }
-  static int16_t adcCh1;
-  static int16_t adcCh2;
-  static int16_t adcCh3;
-  static int16_t adcCh4;
-  loopADC.startConversion(MCP342X_CHANNEL_1);
-  loopADC.getResult(&adcCh1);
-  loopADC.startConversion(MCP342X_CHANNEL_2); 
-  loopADC.getResult(&adcCh2);
-  loopADC.startConversion(MCP342X_CHANNEL_3);
-  loopADC.getResult(&adcCh3); 
-  loopADC.startConversion(MCP342X_CHANNEL_4);
-  loopADC.getResult(&adcCh4);
+      static int16_t adcCh1;
+      static int16_t adcCh2;
+      static int16_t adcCh3;
+      static int16_t adcCh4;
+      loopADC.startConversion(MCP342X_CHANNEL_1);
+      loopADC.getResult(&adcCh1);
+      loopADC.startConversion(MCP342X_CHANNEL_2); 
+      loopADC.getResult(&adcCh2);
+      loopADC.startConversion(MCP342X_CHANNEL_3);
+      loopADC.getResult(&adcCh3); 
+      loopADC.startConversion(MCP342X_CHANNEL_4);
+      loopADC.getResult(&adcCh4);
+      updateMethaneSensor();
+      
+      delay(100); //just in case
 
-  delay(100); //just in case
+      //convert ADC counts to engineering units
+      flow = FLOW_CONVERSION_SLOPE*16.f*(adcCh1-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + FLOW_CONVERSION_OFFSET;
+      temp_feed = TEMP_FEED_CONVERSION_SLOPE*16.f*(adcCh2-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + TEMP_FEED_CONVERSION_OFFSET;
+      pressure = PRESSURE_CONVERSION_SLOPE*16.f*(adcCh3-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + PRESSURE_CONVERSION_OFFSET;
+      temp_burner = TEMP_BURNER_CONVERSION_SLOPE*16.f*(adcCh4-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + TEMP_BURNER_CONVERSION_OFFSET;
 
-  if (DEBUGMODE > 0) {
-    digitalWrite(PIN_RELAY, LOW); //don't turn off sensors in debug mode
-  } else {
-    digitalWrite(PIN_RELAY, LOW);
-  }
+      state = 3;
+      cyclecounter = 0;
+      break;
 
-  Serial.print("Ch1 ");
-  Serial.println(adcCh1);
-  Serial.print("Ch2 ");
-  Serial.println(adcCh2);
-  Serial.print("Ch3 ");
-  Serial.println(adcCh3);
-  Serial.print("Ch4 ");
-  Serial.println(adcCh4);
+    case 3:  //report data
+      cyclecounter++;
+      if (TRANSMIT > 0) {
+        Particle.publish("scheduledReport", String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4), PRIVATE, NO_ACK);
+      }
 
+      //Debug data out to USB serial
+      Serial.print("Ch1 ");
+      Serial.println(adcCh1);
+      Serial.print("Ch2 ");
+      Serial.println(adcCh2);
+      Serial.print("Ch3 ");
+      Serial.println(adcCh3);
+      Serial.print("Ch4 ");
+      Serial.println(adcCh4);
+      Serial.println(String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4));
 
-  //convert ADC counts to engineering units
-  flow = FLOW_CONVERSION_SLOPE*16.f*(adcCh1-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + FLOW_CONVERSION_OFFSET;
-  temp_feed = TEMP_FEED_CONVERSION_SLOPE*16.f*(adcCh2-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + TEMP_FEED_CONVERSION_OFFSET;
-  pressure = PRESSURE_CONVERSION_SLOPE*16.f*(adcCh3-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + PRESSURE_CONVERSION_OFFSET;
-  temp_burner = TEMP_BURNER_CONVERSION_SLOPE*16.f*(adcCh4-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + TEMP_BURNER_CONVERSION_OFFSET;
+      state = 4;
+      cyclecounter = 0;
+      break;
 
-  Serial.println(String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4));
+    case 4:  //cleanup tasks go here if needed
+      //pseudocode: flush UART buffer
+      cyclecounter = 0;
+      state = 0;
+      break;
+    
+    default:
+      cyclecounter = 0;
+      state = 0;
+      break; 
 
-  if (TRANSMIT > 0) {
-    Particle.publish("scheduledReport", String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4), PRIVATE, NO_ACK);
-  }
+  }  //end of state machine, switch statement
 
-  //pseudocode: turn relay off
-  digitalWrite(PIN_LED, LOW);
-  delay(1000);
-  digitalWrite(PIN_LED, HIGH);
-  delay(1000);
+}
+
+void updateMethaneSensor() {
+
 }
