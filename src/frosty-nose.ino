@@ -7,22 +7,23 @@
  */
 
 #include <MCP342X.h>
+//#include <cstdlib>
+//#include <iostream>
 
 #define PIN_LED D7
 #define PIN_RELAY D8
 
+//conversion constants
 #define ADC_COUNTS_4mA 5813
 #define ADC_COUNTS_20mA 29390
-#define FLOW_CONVERSION_SLOPE 1
-#define FLOW_CONVERSION_OFFSET 0
-#define PRESSURE_CONVERSION_SLOPE 1
-#define PRESSURE_CONVERSION_OFFSET 0
-#define TEMP_FEED_CONVERSION_SLOPE 1
-#define TEMP_FEED_CONVERSION_OFFSET 0
-#define TEMP_BURNER_CONVERSION_SLOPE 1
-#define TEMP_BURNER_CONVERSION_OFFSET 0
-#define FRACTION_CONVERSION_SLOPE 1
-#define FRACTION_CONVERSION_OFFSET 0
+#define FLOW_READING_AT_4mA 0.f //cfm
+#define FLOW_READING_AT_20mA 33.f
+#define PRESSURE_READING_AT_4mA 0.f //psi
+#define PRESSURE_READING_AT_20mA 30.f
+#define TEMP_FEED_READING_AT_4mA -20.f //degC
+#define TEMP_FEED_READING_AT_20mA 100.f
+#define TEMP_BURNER_READING_AT_4mA -40.f //degC
+#define TEMP_BURNER_READING_AT_20mA 60.f
 
 #define DEBUGMODE 0   //in debug mode we skip the sleep time and don't power off the sensors
 #define TRANSMIT 1    //set to 1 to enable celluar reporting, set to 0 to disable
@@ -46,7 +47,7 @@ double flow = 1.1f;
 double temp_feed = 1.2f;
 double pressure = 1.3f;
 double temp_burner = 1.4f;
-double fraction_ch4 = 1.5f;
+double percent_ch4 = 1.5f;
 
 // Using SEMI_AUTOMATIC mode to get the lowest possible data usage by
 // registering functions and variables BEFORE connecting to the cloud.
@@ -59,7 +60,8 @@ void setup() {
   //start i2c and serial
   Wire.begin();
   Serial.begin(9600); //debug USB serial
-  Serial1.begin(34800); // hardware serial for methane sensor
+  Serial1.begin(38400); // hardware serial for methane sensor
+  Serial1.setTimeout(10);
 
   while (!Serial) {}  // wait for Serial comms to become ready
   Serial.println("Starting up");
@@ -71,7 +73,7 @@ void setup() {
   Particle.variable("pressure", pressure);
   Particle.variable("temp_feed", temp_feed);
   Particle.variable("temp_burner", temp_burner);
-  Particle.variable("fraction_ch4", fraction_ch4);
+  Particle.variable("percent_ch4", percent_ch4);
 
   //establish connection
   Particle.connect();
@@ -95,7 +97,11 @@ void loop() {
     case 0:  //idle, check UART buffer, update CH4 Concentration reading, flash LED
       cyclecounter++;
       digitalWrite(PIN_LED, (cyclecounter/2)%2 > 0.5);  //toggle LED every two cycles
-      digitalWrite(PIN_RELAY, LOW);  //sensor power off in this state
+      if (DEBUGMODE > 0) {
+        digitalWrite(PIN_RELAY, HIGH);  //leave sensors on in debug state
+      } else {
+        digitalWrite(PIN_RELAY, LOW);  //sensor power off in this state
+      }
       updateMethaneSensor();
       if (cyclecounter * HOUSEKEEPING_CYCLE > SLEEP_TIME) {
         cyclecounter = 0;
@@ -141,10 +147,10 @@ void loop() {
       delay(100); //just in case
 
       //convert ADC counts to engineering units
-      flow = FLOW_CONVERSION_SLOPE*16.f*(adcCh1-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + FLOW_CONVERSION_OFFSET;
-      temp_feed = TEMP_FEED_CONVERSION_SLOPE*16.f*(adcCh2-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + TEMP_FEED_CONVERSION_OFFSET;
-      pressure = PRESSURE_CONVERSION_SLOPE*16.f*(adcCh3-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + PRESSURE_CONVERSION_OFFSET;
-      temp_burner = TEMP_BURNER_CONVERSION_SLOPE*16.f*(adcCh4-ADC_COUNTS_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA) + 4.f + TEMP_BURNER_CONVERSION_OFFSET;
+      flow = (adcCh1-ADC_COUNTS_4mA)*(FLOW_READING_AT_20mA-FLOW_READING_AT_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA)+FLOW_READING_AT_4mA;
+      temp_feed = (adcCh2-ADC_COUNTS_4mA)*(TEMP_FEED_READING_AT_20mA-TEMP_FEED_READING_AT_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA)+TEMP_FEED_READING_AT_4mA;
+      pressure = (adcCh3-ADC_COUNTS_4mA)*(PRESSURE_READING_AT_20mA-PRESSURE_READING_AT_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA)+PRESSURE_READING_AT_4mA;
+      temp_burner = (adcCh4-ADC_COUNTS_4mA)*(TEMP_BURNER_READING_AT_20mA-TEMP_BURNER_READING_AT_4mA)/(ADC_COUNTS_20mA-ADC_COUNTS_4mA)+TEMP_BURNER_READING_AT_4mA;
 
       state = 3;
       cyclecounter = 0;
@@ -153,7 +159,7 @@ void loop() {
     case 3:  //report data
       cyclecounter++;
       if (TRANSMIT > 0) {
-        Particle.publish("scheduledReport", String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4), PRIVATE, NO_ACK);
+        Particle.publish("scheduledReport", String::format("FLOW=%.1fcfm, PRES=%.1fpsi, TEMP=%.1fC, BURN=%.1fC, PCH4=%.1f%%", flow, pressure, temp_feed, temp_burner, percent_ch4), PRIVATE, NO_ACK);
       }
 
       //Debug data out to USB serial
@@ -165,7 +171,7 @@ void loop() {
       Serial.println(adcCh3);
       Serial.print("Ch4 ");
       Serial.println(adcCh4);
-      Serial.println(String::format("flow=%.1f, pressure=%.1f, temp_feed=%.1f, temp_burner=%.1f, fraction_ch4=%.1f", flow, pressure, temp_feed, temp_burner, fraction_ch4));
+      Serial.println(String::format("FLOW=%.1fcfm, PRES=%.1fpsi, TEMP=%.1fC, BURN=%.1fC, PCH4=%.1f%%", flow, pressure, temp_feed, temp_burner, percent_ch4));
 
       state = 4;
       cyclecounter = 0;
@@ -186,6 +192,26 @@ void loop() {
 
 }
 
-void updateMethaneSensor() {
 
+//read the UART buffer and update the methane reading
+//note this needs some data handling cleanup
+//to prevent hang due to a failed sensor spamming UART data
+void updateMethaneSensor() {  
+  unsigned int ch4_ppm = 0;
+  if (Serial1.available() > 40) {
+    while(Serial1.available()) {
+      String inirSensorData = Serial1.readStringUntil('\n');
+      if (inirSensorData == "0000005b") {  //look for the start symbol
+        if(DEBUGMODE > 0) {Serial.println(inirSensorData);}  //debug out to USB serial
+        inirSensorData = Serial1.readStringUntil('\n');  //next 8 bytes after start symbol are ppm data
+        if(DEBUGMODE > 0) {Serial.println(inirSensorData);}  //debug out to USB serial
+        ch4_ppm = std::strtoul(inirSensorData, 0, 16);
+        Serial.print(">> CH4 PPM: ");
+        Serial.println(ch4_ppm);
+        percent_ch4 = ch4_ppm / 10000.f;
+      }
+      if(DEBUGMODE > 0) {Serial.println(inirSensorData);}  //debug out to USB serial
+    }
+  }
+  return;
 }
