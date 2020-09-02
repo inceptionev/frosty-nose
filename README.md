@@ -1,6 +1,6 @@
-# frosty-nose
+# Methany
 
-A Particle project named frosty-nose
+Software repository for Frost Methane Labs' Particle-based cellular methane flare monitor device.
 
 ## Welcome to your project!
 
