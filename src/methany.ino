@@ -22,8 +22,8 @@
 #define PRESSURE_READING_AT_20mA 30.f
 #define TEMP_FEED_READING_AT_4mA -20.f //degC
 #define TEMP_FEED_READING_AT_20mA 100.f
-#define TEMP_BURNER_READING_AT_4mA -40.f //degC
-#define TEMP_BURNER_READING_AT_20mA 60.f
+#define TEMP_BURNER_READING_AT_4mA -17.78f //degC
+#define TEMP_BURNER_READING_AT_20mA 1093.33f
 
 #define DEBUGMODE 0   //in debug mode we skip the sleep time and don't power off the sensors
 #define TRANSMIT 1    //set to 1 to enable celluar reporting, set to 0 to disable
